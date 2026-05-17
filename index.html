@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PhotoEditor Pro - Single File</title>
+  <style>
+    :root {
+      --bg-primary:#1a1a1a; --bg-secondary:#2a2a2a; --bg-tertiary:#3a3a3a; --bg-subtle:#1f1f1f;
+      --text-primary:#e0e0e0; --text-secondary:#a0a0a0; --text-muted:#707070;
+      --accent-primary:#00d4ff; --accent-secondary:#ff6b9d; --success:#00d084; --warning:#ffa500; --error:#ff4757;
+      --border-radius-sm:4px; --border-radius-md:6px; --border-radius-lg:8px;
+    }
+    *{box-sizing:border-box; margin:0; padding:0; user-select:none}
+    html,body{height:100%; overflow:hidden; font-family:Inter,system-ui,-apple-system,sans-serif; background:var(--bg-primary); color:var(--text-primary)}
+    #app{height:100%; display:flex; flex-direction:column}
+    .top{height:56px; background:linear-gradient(180deg,#252525 0%,var(--bg-primary) 100%); border-bottom:1px solid #ffffff14; display:flex; align-items:center; padding:0 10px; gap:10px}
+    .btn,select,input[type="number"],input[type="text"],input[type="range"],textarea{background:var(--bg-tertiary); color:var(--text-primary); border:1px solid #ffffff1f; border-radius:var(--border-radius-sm); padding:6px 8px; font-size:12px}
+    .btn{cursor:pointer}.btn:hover{border-color:var(--accent-primary); color:var(--accent-primary)} .btn.active{background:linear-gradient(135deg,var(--accent-primary),#00a8cc); color:#fff}
+    .workspace{flex:1; display:flex; overflow:hidden}
+    .left{width:80px; background:var(--bg-secondary); border-right:1px solid #ffffff14; padding:8px; display:flex; flex-direction:column; gap:6px}
+    .left .btn{height:30px}
+    .main{flex:1; display:flex; flex-direction:column; position:relative}
+    #viewport{flex:1; overflow:auto; background:#111; display:flex; align-items:center; justify-content:center; position:relative}
+    #stage{position:relative; transform-origin:0 0}
+    canvas.overlay{position:absolute; inset:0; pointer-events:none}
+    #mainCanvas{display:block; box-shadow:0 10px 32px #000a; background:#fff}
+    .right{width:320px; background:var(--bg-secondary); border-left:1px solid #ffffff14; display:flex; flex-direction:column}
+    .tabs{display:flex}.tabs .btn{flex:1; border-radius:0; border:none; border-bottom:2px solid transparent; background:transparent}.tabs .btn.active{border-bottom-color:var(--accent-primary)}
+    .panel{padding:10px; overflow:auto; flex:1; display:none}.panel.active{display:block}
+    .status{height:26px; border-top:1px solid #ffffff14; background:var(--bg-secondary); display:flex; align-items:center; justify-content:space-between; padding:0 10px; font-size:11px; color:var(--text-muted)}
+    .layer-item{display:flex; align-items:center; justify-content:space-between; padding:6px; border:1px solid #ffffff14; border-radius:4px; margin-bottom:6px; cursor:pointer}
+    .layer-item.sel{border-color:var(--accent-primary)}
+    .drop{outline:2px dashed var(--accent-primary); outline-offset:-4px}
+    .row{display:flex; gap:6px; align-items:center; margin-bottom:8px}
+  </style>
+</head>
+<body>
+<div id="app">
+  <div class="top">
+    <button class="btn" id="newLayer">+ Layer</button>
+    <button class="btn" id="undo">Undo</button><button class="btn" id="redo">Redo</button>
+    <button class="btn" id="fit">Fit</button><button class="btn" id="actual">100%</button>
+    <input type="range" id="zoom" min="10" max="3200" value="100"><span id="zoomTxt">100%</span>
+    <select id="blend"><option>source-over</option><option>multiply</option><option>screen</option><option>overlay</option><option>darken</option><option>lighten</option></select>
+    <input type="file" id="upload" accept="image/*" multiple>
+    <span style="color:var(--text-secondary)">Drop images onto viewport</span>
+  </div>
+  <div class="workspace">
+    <aside class="left" id="tools"></aside>
+    <main class="main">
+      <div id="viewport"><div id="stage"><canvas id="mainCanvas" width="1280" height="720"></canvas><canvas id="sel" class="overlay"></canvas></div></div>
+      <div class="status"><span id="toolLbl">Tool: move</span><span id="xy">X:0 Y:0</span><span id="mem">Mem n/a</span></div>
+    </main>
+    <aside class="right">
+      <div class="tabs"><button class="btn active" data-tab="layers">Layers</button><button class="btn" data-tab="adjust">Adjust</button><button class="btn" data-tab="ai">AI</button></div>
+      <section class="panel active" id="layersPanel"></section>
+      <section class="panel" id="adjustPanel">
+        <div class="row"><button class="btn" id="gray">Grayscale</button><button class="btn" id="invert">Invert</button><button class="btn" id="denoise">Denoise</button></div>
+        <div class="row"><input id="bright" type="number" value="20"><button class="btn" id="brightness">Brightness</button></div>
+        <div class="row"><button class="btn" id="enhance">AI Enhance</button><button class="btn" id="removeBg">Remove BG</button></div>
+      </section>
+      <section class="panel" id="aiPanel">
+        <p style="font-size:12px;color:var(--text-secondary)">Local AI tools (heuristic): smart subject mask, denoise, enhancement, background remover.</p>
+        <button class="btn" id="subject">Smart Subject Select</button>
+      </section>
+    </aside>
+  </div>
+</div>
+<script>
+class Editor {
+  constructor(){
+    this.c=document.getElementById('mainCanvas'); this.ctx=this.c.getContext('2d'); this.sel=document.getElementById('sel'); this.sctx=this.sel.getContext('2d');
+    this.stage=document.getElementById('stage'); this.viewport=document.getElementById('viewport'); this.zoom=1; this.pan={x:0,y:0};
+    this.layers=[]; this.active=null; this.history=[]; this.hi=-1; this.dirty=true; this.tool='move'; this.drag=null; this.selectRect=null;
+    this.brush={size:18,opacity:1,color:'#000'};
+    this.worker=this.mkWorker(); this.tools=['move','brush','eraser','rect-select','magic-wand','crop','text','shape'];
+    this.initUI(); this.addLayer('Background',true); this.fit(); this.loop(); this.bind(); this.snapshot('init');
+  }
+  mkWorker(){ const code=`onmessage=e=>{const{img,mode,val}=e.data,d=img.data,w=img.width,h=img.height;
+    if(mode==='grayscale'){for(let i=0;i<d.length;i+=4){const v=.2126*d[i]+.7152*d[i+1]+.0722*d[i+2];d[i]=d[i+1]=d[i+2]=v;}}
+    if(mode==='invert'){for(let i=0;i<d.length;i+=4){d[i]=255-d[i];d[i+1]=255-d[i+1];d[i+2]=255-d[i+2];}}
+    if(mode==='brightness'){for(let i=0;i<d.length;i+=4){d[i]=Math.max(0,Math.min(255,d[i]+val));d[i+1]=Math.max(0,Math.min(255,d[i+1]+val));d[i+2]=Math.max(0,Math.min(255,d[i+2]+val));}}
+    if(mode==='denoise'){const c=new Uint8ClampedArray(d);const k=[1,2,1,2,4,2,1,2,1],s=16;for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){let r=0,g=0,b=0,a=0,t=0,m=0;for(let j=-1;j<=1;j++)for(let i=-1;i<=1;i++){const p=((y+j)*w+x+i)*4,wv=k[m++];r+=c[p]*wv;g+=c[p+1]*wv;b+=c[p+2]*wv;a+=c[p+3]*wv;t+=wv;}const q=(y*w+x)*4;d[q]=r/t;d[q+1]=g/t;d[q+2]=b/t;d[q+3]=a/t;}}
+    postMessage(img)};`; return new Worker(URL.createObjectURL(new Blob([code],{type:'text/javascript'}))); }
+  initUI(){ const t=document.getElementById('tools'); this.tools.forEach(n=>{const b=document.createElement('button'); b.className='btn'+(n==='move'?' active':''); b.textContent=n[0].toUpperCase(); b.title=n; b.onclick=()=>this.setTool(n); t.appendChild(b);});
+    document.querySelectorAll('.tabs .btn').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs .btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));document.getElementById(b.dataset.tab+'Panel').classList.add('active');});
+  }
+  bind(){
+    const map=e=>{const r=this.c.getBoundingClientRect(); return {x:Math.round((e.clientX-r.left)*(this.c.width/r.width)),y:Math.round((e.clientY-r.top)*(this.c.height/r.height))};};
+    this.c.onmousedown=e=>this.onDown(map(e),e); this.c.onmousemove=e=>{const p=map(e); document.getElementById('xy').textContent=`X:${p.x} Y:${p.y}`; this.onMove(p,e)}; window.onmouseup=e=>this.onUp(e);
+    this.viewport.onwheel=e=>{if(e.ctrlKey){e.preventDefault(); this.setZoom(this.zoom+(e.deltaY<0?0.08:-0.08));}};
+    window.onkeydown=e=>{if(e.ctrlKey&&e.key.toLowerCase()==='z'){e.preventDefault(); e.shiftKey?this.redo():this.undo()} if(e.key===' ')this.space=true; if(e.key==='0')this.setZoom(1); if(e.key==='1')this.fit();}; window.onkeyup=e=>{if(e.key===' ')this.space=false;};
+    this.viewport.onmousedown=e=>{if(this.space||e.button===1){this.panning={x:e.clientX,y:e.clientY,ox:this.pan.x,oy:this.pan.y};}}; window.onmousemove=e=>{if(this.panning){this.pan.x=this.panning.ox+e.clientX-this.panning.x; this.pan.y=this.panning.oy+e.clientY-this.panning.y; this.applyTransform();}}; window.onmouseup=()=>this.panning=null;
+    document.getElementById('zoom').oninput=e=>this.setZoom(e.target.value/100); document.getElementById('fit').onclick=()=>this.fit(); document.getElementById('actual').onclick=()=>this.setZoom(1);
+    document.getElementById('newLayer').onclick=()=>{this.addLayer('Layer '+(this.layers.length+1)); this.snapshot('new layer')}; document.getElementById('undo').onclick=()=>this.undo(); document.getElementById('redo').onclick=()=>this.redo();
+    document.getElementById('blend').onchange=e=>{if(this.active){this.active.blendMode=e.target.value; this.dirty=true; this.snapshot('blend mode')}};
+    document.getElementById('upload').onchange=e=>[...e.target.files].forEach(f=>this.loadFile(f));
+    ['gray','invert','denoise'].forEach(id=>document.getElementById(id).onclick=()=>this.filter(id==='gray'?'grayscale':id)); document.getElementById('brightness').onclick=()=>this.filter('brightness',+document.getElementById('bright').value||0);
+    document.getElementById('enhance').onclick=()=>{this.filter('denoise'); setTimeout(()=>this.filter('brightness',8),60)};
+    document.getElementById('removeBg').onclick=()=>this.removeBg(); document.getElementById('subject').onclick=()=>this.smartSubject();
+    this.viewport.ondragover=e=>{e.preventDefault(); this.viewport.classList.add('drop')}; this.viewport.ondragleave=()=>this.viewport.classList.remove('drop'); this.viewport.ondrop=e=>{e.preventDefault(); this.viewport.classList.remove('drop'); [...e.dataTransfer.files].filter(f=>f.type.startsWith('image/')).forEach(f=>this.loadFile(f));};
+  }
+  setTool(n){this.tool=n; document.getElementById('toolLbl').textContent='Tool: '+n; [...document.querySelectorAll('.left .btn')].forEach((b,i)=>b.classList.toggle('active',this.tools[i]===n));}
+  addLayer(name,fill=false){const cv=document.createElement('canvas'); cv.width=this.c.width; cv.height=this.c.height; const cx=cv.getContext('2d'); if(fill){cx.fillStyle='#fff'; cx.fillRect(0,0,cv.width,cv.height)}
+    const layer={id:crypto.randomUUID(),name,x:0,y:0,visible:true,opacity:1,blendMode:'source-over',canvas:cv,ctx:cx}; this.layers.unshift(layer); this.active=layer; this.rebuildLayers(); this.dirty=true;}
+  rebuildLayers(){const p=document.getElementById('layersPanel'); p.innerHTML=''; this.layers.forEach((l,idx)=>{const d=document.createElement('div'); d.className='layer-item'+(this.active===l?' sel':''); d.innerHTML=`<span>${l.name}</span><div><button class='btn'>👁</button><button class='btn'>↑</button><button class='btn'>↓</button></div>`;
+      const [v,u,w]=d.querySelectorAll('button'); v.onclick=(e)=>{e.stopPropagation();l.visible=!l.visible;this.dirty=true}; u.onclick=(e)=>{e.stopPropagation(); if(idx>0){[this.layers[idx-1],this.layers[idx]]=[this.layers[idx],this.layers[idx-1]]; this.rebuildLayers(); this.snapshot('layer reorder')}}; w.onclick=(e)=>{e.stopPropagation(); if(idx<this.layers.length-1){[this.layers[idx+1],this.layers[idx]]=[this.layers[idx],this.layers[idx+1]]; this.rebuildLayers(); this.snapshot('layer reorder')}};
+      d.onclick=()=>{this.active=l; document.getElementById('blend').value=l.blendMode; this.rebuildLayers()}; p.appendChild(d);});}
+  onDown(p,e){if(!this.active)return; if(this.tool==='move'){this.drag={x:p.x,y:p.y,ox:this.active.x,oy:this.active.y}} if(this.tool==='brush'||this.tool==='eraser'){this.painting=true; this.last=p; this.paint(p)} if(this.tool==='rect-select'||this.tool==='crop'){this.selectRect={x:p.x,y:p.y,w:0,h:0}} if(this.tool==='magic-wand'){this.magicWand(p.x,p.y)} if(this.tool==='text'){const txt=prompt('Text'); if(txt){this.active.ctx.fillStyle=this.brush.color; this.active.ctx.font='36px sans-serif'; this.active.ctx.fillText(txt,p.x,p.y); this.dirty=true; this.snapshot('text')}} if(this.tool==='shape'){this.active.ctx.fillStyle=this.brush.color; this.active.ctx.fillRect(p.x-40,p.y-30,80,60); this.dirty=true; this.snapshot('shape')}}
+  onMove(p){if(this.drag&&this.tool==='move'){this.active.x=this.drag.ox+(p.x-this.drag.x); this.active.y=this.drag.oy+(p.y-this.drag.y); this.dirty=true}
+    if(this.painting&&(this.tool==='brush'||this.tool==='eraser')){const d=Math.hypot(p.x-this.last.x,p.y-this.last.y),steps=Math.max(1,Math.ceil(d/2)); for(let i=0;i<=steps;i++){this.paint({x:this.last.x+(p.x-this.last.x)*i/steps,y:this.last.y+(p.y-this.last.y)*i/steps});} this.last=p;}
+    if(this.selectRect&&(this.tool==='rect-select'||this.tool==='crop')){this.selectRect.w=p.x-this.selectRect.x; this.selectRect.h=p.y-this.selectRect.y; this.drawSelection();}
+  }
+  onUp(){if(this.drag){this.drag=null; this.snapshot('move')} if(this.painting){this.painting=false; this.snapshot(this.tool)} if(this.selectRect&&this.tool==='crop'){const r=this.normRect(this.selectRect); if(r.w>2&&r.h>2) this.crop(r); this.selectRect=null; this.clearSel()} else if(this.selectRect&&this.tool==='rect-select'){this.snapshot('select')}}
+  paint(p){const c=this.active.ctx; c.save(); c.globalCompositeOperation=this.tool==='eraser'?'destination-out':'source-over'; c.globalAlpha=this.brush.opacity; c.fillStyle=this.brush.color; c.beginPath(); c.arc(p.x-this.active.x,p.y-this.active.y,this.brush.size,0,Math.PI*2); c.fill(); c.restore(); this.dirty=true}
+  drawSelection(){this.sel.width=this.c.width; this.sel.height=this.c.height; const r=this.normRect(this.selectRect); this.sctx.clearRect(0,0,this.sel.width,this.sel.height); this.sctx.setLineDash([4,4]); this.sctx.strokeStyle='#fff'; this.sctx.strokeRect(r.x,r.y,r.w,r.h);}
+  clearSel(){this.sctx.clearRect(0,0,this.sel.width,this.sel.height)}
+  normRect(r){const x=r.w<0?r.x+r.w:r.x,y=r.h<0?r.y+r.h:r.y; return {x,y,w:Math.abs(r.w),h:Math.abs(r.h)}}
+  magicWand(x,y){const merged=this.flattenImageData(); const {data,width,height}=merged; const m=new Uint8Array(width*height),q=[[x,y]],tol=36,s=(y*width+x)*4,t=[data[s],data[s+1],data[s+2],data[s+3]]; m[y*width+x]=1;
+    while(q.length){const [cx,cy]=q.shift(); [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{const nx=cx+dx,ny=cy+dy;if(nx>=0&&ny>=0&&nx<width&&ny<height){const i=ny*width+nx;if(m[i])return;const p=i*4;const dist=Math.hypot(data[p]-t[0],data[p+1]-t[1],data[p+2]-t[2],data[p+3]-t[3]);if(dist<=tol){m[i]=1;q.push([nx,ny]);}}});}
+    this.sel.width=width; this.sel.height=height; const id=this.sctx.createImageData(width,height); for(let i=0;i<m.length;i++) if(m[i]){const p=i*4; id.data[p]=0; id.data[p+1]=212; id.data[p+2]=255; id.data[p+3]=100;} this.sctx.putImageData(id,0,0);}
+  flattenImageData(){const cv=document.createElement('canvas'); cv.width=this.c.width; cv.height=this.c.height; const cx=cv.getContext('2d'); [...this.layers].reverse().forEach(l=>{if(!l.visible)return; cx.globalAlpha=l.opacity; cx.globalCompositeOperation=l.blendMode; cx.drawImage(l.canvas,l.x,l.y)}); return cx.getImageData(0,0,cv.width,cv.height)}
+  crop(r){this.layers.forEach(l=>{const tmp=document.createElement('canvas'); tmp.width=r.w; tmp.height=r.h; tmp.getContext('2d').drawImage(l.canvas,r.x-l.x,r.y-l.y,r.w,r.h,0,0,r.w,r.h); l.canvas=tmp; l.ctx=tmp.getContext('2d'); l.x=0; l.y=0;}); this.c.width=this.sel.width=r.w; this.c.height=this.sel.height=r.h; this.stage.style.width=r.w+'px'; this.stage.style.height=r.h+'px'; this.dirty=true; this.snapshot('crop')}
+  filter(mode,val=0){if(!this.active)return; const id=this.active.ctx.getImageData(0,0,this.active.canvas.width,this.active.canvas.height); this.worker.onmessage=e=>{this.active.ctx.putImageData(e.data,0,0); this.dirty=true; this.snapshot(mode)}; this.worker.postMessage({img:id,mode,val});}
+  removeBg(){if(!this.active)return; const id=this.active.ctx.getImageData(0,0,this.active.canvas.width,this.active.canvas.height); const d=id.data; for(let i=0;i<d.length;i+=4){const max=Math.max(d[i],d[i+1],d[i+2]),min=Math.min(d[i],d[i+1],d[i+2]); if(max>240&&max-min<20)d[i+3]=0;} this.active.ctx.putImageData(id,0,0); this.dirty=true; this.snapshot('remove bg')}
+  smartSubject(){const id=this.flattenImageData(),d=id.data,w=id.width,h=id.height,lum=new Float32Array(w*h); let avg=0; for(let i=0,j=0;i<d.length;i+=4,j++){lum[j]=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; avg+=lum[j]} avg/=lum.length; this.sel.width=w; this.sel.height=h; const out=this.sctx.createImageData(w,h); for(let i=0;i<lum.length;i++){if(Math.abs(lum[i]-avg)>22){const p=i*4; out.data[p]=255; out.data[p+3]=110;}} this.sctx.putImageData(out,0,0)}
+  render(){this.ctx.clearRect(0,0,this.c.width,this.c.height); for(let y=0;y<this.c.height;y+=16)for(let x=0;x<this.c.width;x+=16){this.ctx.fillStyle=((x+y)/16)%2?'#f7f7f7':'#ececec'; this.ctx.fillRect(x,y,16,16)} [...this.layers].reverse().forEach(l=>{if(!l.visible)return; this.ctx.save(); this.ctx.globalAlpha=l.opacity; this.ctx.globalCompositeOperation=l.blendMode; this.ctx.drawImage(l.canvas,l.x,l.y); this.ctx.restore();});}
+  snapshot(label){const s={layers:this.layers.map(l=>({name:l.name,x:l.x,y:l.y,visible:l.visible,opacity:l.opacity,blendMode:l.blendMode,data:l.canvas.toDataURL()})),w:this.c.width,h:this.c.height,label}; this.history=this.history.slice(0,this.hi+1); this.history.push(s); this.hi=this.history.length-1;}
+  restore(s){this.c.width=this.sel.width=s.w; this.c.height=this.sel.height=s.h; this.layers=[]; let pending=s.layers.length; s.layers.forEach(o=>{const img=new Image(); img.onload=()=>{const cv=document.createElement('canvas'); cv.width=s.w; cv.height=s.h; const cx=cv.getContext('2d'); cx.drawImage(img,0,0); this.layers.push({...o,canvas:cv,ctx:cx}); if(--pending===0){this.active=this.layers[0]; this.rebuildLayers(); this.dirty=true;}}; img.src=o.data;});}
+  undo(){if(this.hi>0){this.hi--; this.restore(this.history[this.hi])}}
+  redo(){if(this.hi<this.history.length-1){this.hi++; this.restore(this.history[this.hi])}}
+  setZoom(z){this.zoom=Math.max(0.1,Math.min(32,z)); document.getElementById('zoom').value=Math.round(this.zoom*100); document.getElementById('zoomTxt').textContent=Math.round(this.zoom*100)+'%'; this.applyTransform()}
+  fit(){const rw=this.viewport.clientWidth/this.c.width,rh=this.viewport.clientHeight/this.c.height; this.setZoom(Math.min(rw,rh,1)); this.pan={x:0,y:0}; this.applyTransform()}
+  applyTransform(){this.stage.style.transform=`translate(${this.pan.x}px,${this.pan.y}px) scale(${this.zoom})`}
+  loop(){if(this.dirty){this.render(); this.dirty=false;} if(performance.memory){const m=(performance.memory.usedJSHeapSize/1048576).toFixed(1); document.getElementById('mem').textContent=`Mem ${m} MB`;} requestAnimationFrame(()=>this.loop())}
+  loadFile(f){const img=new Image(); img.onload=()=>{this.addLayer(f.name); this.active.ctx.drawImage(img,0,0,Math.min(img.width,this.c.width),Math.min(img.height,this.c.height)); this.dirty=true; this.snapshot('import '+f.name)}; img.src=URL.createObjectURL(f)}
+}
+new Editor();
+</script>
+</body>
+</html>
